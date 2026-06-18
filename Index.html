@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>converter</title>
+    <style>
+        body { 
+            font-family: 'Segoe UI', sans-serif; 
+            background-color: #ffffff; 
+            color: #000000; 
+            text-align: center; 
+            padding: 40px; 
+        }
+        .container { 
+            max-width: 650px; 
+            margin: 0 auto; 
+            background: #ffffff; 
+            padding: 30px; 
+            border-radius: 12px; 
+            border: 2px solid #000000; 
+        }
+        h1 { color: #000000; margin-bottom: 5px; }
+        p { color: #444444; font-size: 14px; margin-top: 0; }
+        #drop-zone { 
+            border: 2px dashed #000000; 
+            padding: 40px; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            background: #f0f0f0; 
+            margin: 20px 0; 
+            font-weight: bold; 
+            transition: background 0.2s; 
+        }
+        #drop-zone:hover { background: #e0e0e0; }
+        textarea { 
+            width: 100%; 
+            height: 140px; 
+            background: #fcfcfc; 
+            color: #000000; 
+            border: 1px solid #000000; 
+            border-radius: 6px; 
+            padding: 12px; 
+            font-family: monospace; 
+            resize: none; 
+            box-sizing: border-box; 
+        }
+        button { 
+            background: #000000; 
+            color: #ffffff; 
+            border: none; 
+            padding: 12px 24px; 
+            font-size: 16px; 
+            border-radius: 6px; 
+            cursor: pointer; 
+            font-weight: bold; 
+            width: 100%; 
+            margin-top: 15px; 
+        }
+        button:hover { background: #333333; }
+        #status { 
+            margin-top: 15px; 
+            font-weight: bold; 
+            color: #000000; 
+            padding: 10px; 
+            border-radius: 4px; 
+            font-size: 14px; 
+            border: 1px solid #000000;
+        }
+        .success { background: #000000 !important; color: #ffffff !important; }
+        .error { background: #ff0000 !important; color: #ffffff !important; border: 1px solid #ff0000; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Convert Image to String</h1>
+    <p>12-Bit Color Space + Delta Packing + Greedy Meshing</p>
+    
+    <div id="drop-zone">Drag & Drop Image or Click to Browse</div>
+    <input type="file" id="file-input" accept="image/*" style="display: none;">
+    
+    <div id="status">Ready.</div>
+    <textarea id="output-string" placeholder="The converted string will appear here." readonly></textarea>
+    <button id="copy-btn">Copy String</button>
+</div>
+
+<script>
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+    const outputString = document.getElementById('output-string');
+    const copyBtn = document.getElementById('copy-btn');
+    const status = document.getElementById('status');
+
+    dropZone.addEventListener('click', (e) => { e.preventDefault(); fileInput.click(); });
+    dropZone.addEventListener('dragenter', (e) => { e.preventDefault(); });
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); });
+    dropZone.addEventListener('drop', (e) => { e.preventDefault(); if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]); });
+    fileInput.addEventListener('change', (e) => { if (e.target.files.length > 0) handleFile(e.target.files[0]); });
+
+    class BitPacker {
+        constructor() { this.bytes = []; this.currentByte = 0; this.bitCount = 0; }
+        writeBits(value, bits) {
+            value = value & ((1 << bits) - 1);
+            for (let i = bits - 1; i >= 0; i--) {
+                let bit = (value >> i) & 1;
+                this.currentByte = (this.currentByte << 1) | bit;
+                this.bitCount++;
+                if (this.bitCount === 8) { this.bytes.push(this.currentByte); this.currentByte = 0; this.bitCount = 0; }
+            }
+        }
+        flush() {
+            if (this.bitCount > 0) { this.currentByte = this.currentByte << (8 - this.bitCount); this.bytes.push(this.currentByte); this.currentByte = 0; this.bitCount = 0; }
+        }
+    }
+
+    function bytesToBase64(byteArray) {
+        let binString = '';
+        for (let i = 0; i < byteArray.length; i++) { binString += String.fromCharCode(byteArray[i]); }
+        return btoa(binString);
+    }
+
+    function handleFile(file) {
+        if (!file) return;
+        status.className = "";
+        status.innerText = "Analyzing photographic color frequencies...";
+        outputString.value = "";
+        
+        const reader = new FileReader();
+        reader.onload = function(event) {
+            const img = new Image();
+            img.onload = function() {
+                try {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    
+                    const targetSize = 312;
+                    canvas.width = targetSize;
+                    canvas.height = targetSize;
+
+                    const minSide = Math.min(img.width, img.height);
+                    const sourceX = (img.width - minSide) / 2;
+                    const sourceY = (img.height - minSide) / 2;
+
+                    ctx.fillStyle = "#ffffff"; 
+                    ctx.fillRect(0, 0, targetSize, targetSize);
+                    ctx.drawImage(img, sourceX, sourceY, minSide, minSide, 0, 0, targetSize, targetSize);
+
+                    const imgData = ctx.getImageData(0, 0, targetSize, targetSize).data;
+                    const paletteMap = new Map();
+                    const paletteArray = [];
+                    const gridIndex = Array.from({ length: targetSize }, () => []);
+
+                    for (let y = 0; y < targetSize; y++) {
+                        for (let x = 0; x < targetSize; x++) {
+                            const idx = (y * targetSize + x) * 4;
+                            const r = imgData[idx], g = imgData[idx+1], b = imgData[idx+2];
+                            const r4 = Math.round(r / 17), g4 = Math.round(g / 17), b4 = Math.round(b / 17);
+                            const colorKey = (r4 << 8) | (g4 << 4) | b4;
+                            
+                            if (!paletteMap.has(colorKey)) {
+                                if (paletteArray.length < 4096) {
+                                    paletteMap.set(colorKey, paletteArray.length);
+                                    paletteArray.push({ r: r4 * 17, g: g4 * 17, b: b4 * 17 });
+                                    gridIndex[y][x] = paletteArray.length - 1;
+                                } else {
+                                    let closestDist = Infinity, closestIdx = 0;
+                                    for(let p=0; p<paletteArray.length; p++) {
+                                        const dist = Math.pow((r4*17)-paletteArray[p].r, 2) + Math.pow((g4*17)-paletteArray[p].g, 2) + Math.pow((b4*17)-paletteArray[p].b, 2);
+                                        if(dist < closestDist) { closestDist = dist; closestIdx = p; }
+                                    }
+                                    gridIndex[y][x] = closestIdx;
+                                }
+                            } else {
+                                gridIndex[y][x] = paletteMap.get(colorKey);
+                            }
+                        }
+                    }
+
+                    const packer = new BitPacker();
+                    packer.writeBits(paletteArray.length, 12);
+                    for (let p of paletteArray) {
+                        packer.writeBits(p.r, 8); packer.writeBits(p.g, 8); packer.writeBits(p.b, 8);
+                    }
+
+                    for (let y = 0; y < targetSize; y++) {
+                        let x = 0, lastX = 0, rowSegments = [];
+                        while (x < targetSize) {
+                            const colorId = gridIndex[y][x];
+                            let runLength = 1;
+                            while (x + runLength < targetSize && gridIndex[y][x + runLength] === colorId && runLength < 63) { runLength++; }
+                            rowSegments.push({ x: x, w: runLength, c: colorId });
+                            x += runLength;
+                        }
+
+                        packer.writeBits(rowSegments.length, 10); 
+                        for (let seg of rowSegments) {
+                            let deltaX = seg.x - lastX;
+                            while (deltaX > 7) {
+                                packer.writeBits(7, 3); packer.writeBits(0, 6); packer.writeBits(0, 12);
+                                deltaX -= 7;
+                            }
+                            packer.writeBits(deltaX, 3); 
+                            packer.writeBits(seg.w, 6);   
+                            packer.writeBits(seg.c, 12);  
+                            lastX = seg.x + seg.w;
+                        }
+                    }
+
+                    packer.flush();
+                    const b64 = bytesToBase64(packer.bytes);
+                    outputString.value = `${targetSize},${targetSize}|${b64}`;
+                    
+                    status.className = "success";
+                    status.innerText = `Colors Used: ${paletteArray.length} | Characters: ${outputString.value.length} | Bytes: ${packer.bytes.length}`;
+                } catch (err) {
+                    status.className = "error";
+                    status.innerText = "Error encountered: " + err.message;
+                }
+            };
+            img.src = event.target.result;
+        };
+        reader.readAsDataURL(file);
+    }
+
+    copyBtn.addEventListener('click', () => {
+        if (!outputString.value) return;
+        outputString.select();
+        document.execCommand('copy');
+    });
+</script>
+</body>
+</html>
